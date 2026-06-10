@@ -1,0 +1,22 @@
+# Entorno de ejecución del gateway (venv, base de datos, logs, secretos)
+mcpgateway/
+
+# venvs sueltos
+.venv/
+
+# Secretos y configuración local
+*.env
+.env
+!.env.example
+mcpgateway.env
+
+# Logs y PID
+*.log
+*.pid
+
+# Python
+__pycache__/
+*.py[cod]
+
+# macOS
+.DS_Store
