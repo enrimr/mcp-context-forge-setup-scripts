@@ -1,136 +1,151 @@
-# ContextForge — scripts de instalación
+# ContextForge — install scripts
 
-Instala y arranca [IBM mcp-context-forge](https://github.com/IBM/mcp-context-forge)
-(ContextForge) en un entorno aislado (`.venv`).
+Install and run [IBM mcp-context-forge](https://github.com/IBM/mcp-context-forge)
+(ContextForge) in an isolated environment (`.venv`).
 
-| Script | Plataforma | Servicio permanente |
-|--------|-----------|---------------------|
+| Script | Platform | Persistent service |
+|--------|----------|--------------------|
 | `setup_mcpgateway.sh`       | macOS    | launchd (LaunchAgent) |
 | `setup_mcpgateway_rhel9.sh` | RHEL 9 / Rocky / Alma | systemd |
 
-> **Requiere Python ≥ 3.11** (el paquete usa la sintaxis `except*`).
-> El `python3` por defecto de macOS (3.10) y de RHEL 9 (3.9) **no sirve**.
-> Los scripts buscan/usan `python3.12` o `python3.11` automáticamente.
+> **Requires Python ≥ 3.11** (the package uses `except*` syntax).
+> The default `python3` on macOS (3.10) and RHEL 9 (3.9) **won't work**.
+> The scripts auto-detect and use `python3.12` or `python3.11`.
 
 ---
 
 ## RHEL 9
 
-### Pre-requisitos (los instala el script, aquí por referencia)
+### Prerequisites (installed by the script, listed here for reference)
 ```bash
 sudo dnf install -y python3.12 python3.12-pip jq
-# solo en aarch64, si pip intenta compilar:
+# aarch64 only, if pip needs to compile:
 sudo dnf install -y gcc gcc-c++ make python3.12-devel libffi-devel openssl-devel
 ```
 
-### Arranque rápido (background, efímero — muere al cerrar SSH)
+### Quick start (background, ephemeral — dies when the SSH session closes)
 ```bash
 chmod +x setup_mcpgateway_rhel9.sh
-./setup_mcpgateway_rhel9.sh                 # bind 127.0.0.1
-EXPOSE=1 ./setup_mcpgateway_rhel9.sh        # bind 0.0.0.0 + abre firewalld
+INSTALL_SERVICE=0 ./setup_mcpgateway_rhel9.sh             # bind 127.0.0.1
+INSTALL_SERVICE=0 EXPOSE=1 ./setup_mcpgateway_rhel9.sh    # bind 0.0.0.0 + open firewalld
 ```
 
-### Servicio permanente (systemd — arranca al boot, se reinicia si falla)
+### Persistent service (systemd — starts on boot, restarts on failure)
+The RHEL script installs the systemd service **by default** (`INSTALL_SERVICE=1`):
 ```bash
-INSTALL_SERVICE=1 \
-  JWT_SECRET_KEY='cambia-esto-a-mas-de-32-bytes' \
-  PLATFORM_ADMIN_PASSWORD='algo-fuerte' \
+JWT_SECRET_KEY='change-me-to-more-than-32-bytes' \
+  PLATFORM_ADMIN_PASSWORD='something-strong' \
   EXPOSE=1 sudo -E ./setup_mcpgateway_rhel9.sh
 ```
 
-**Importante:**
-- Usa **`sudo -E`** (no solo `sudo`): la `-E` conserva tus variables de entorno
-  para que los secretos lleguen al `EnvironmentFile`. El servicio se monta bajo
-  tu usuario (`$SUDO_USER`), no bajo root.
-- En modo servicio, `WORKDIR` es **`/opt/mcpgateway`** por defecto (persistente).
-  El script **rechaza `/tmp` y `/var/tmp`** porque se vacían al reiniciar y
-  perderías el venv y la base de datos. Evita también `/home` (problemas con
-  SELinux); `/opt` y `/srv` funcionan sin ajustes.
-- El binario del paquete vive en el venv. Para usarlo a mano (p. ej. generar un
-  token), llama al python del venv, **no** al `python3` del sistema:
+**Important:**
+- Use **`sudo -E`** (not just `sudo`): `-E` preserves your environment variables
+  so the secrets reach the `EnvironmentFile`. The service runs as your user
+  (`$SUDO_USER`), not root.
+- In service mode, `WORKDIR` defaults to **`/opt/mcpgateway`** (persistent).
+  The script **rejects `/tmp` and `/var/tmp`** because they are cleared on reboot
+  and would wipe the venv and database. Also avoid `/home` (SELinux issues);
+  `/opt` and `/srv` work without extra tweaks.
+- **`EXPOSE=1`** makes the gateway listen on `0.0.0.0` and opens the firewall.
+  Without it, it listens only on `127.0.0.1` (not reachable from other machines).
+- The package binary lives in the venv. To use it manually (e.g. to mint a
+  token), call the venv's python, **not** the system `python3`:
   ```bash
   /opt/mcpgateway/.venv/bin/python -m mcpgateway.utils.create_jwt_token \
     --username admin@example.com --exp 10080 --secret "$JWT_SECRET_KEY"
   ```
 
-### Gestión del servicio
+### Managing the service
 ```bash
 systemctl status mcpgateway
 journalctl -u mcpgateway -f
 sudo systemctl stop mcpgateway
-# desinstalar:
+# uninstall:
 sudo systemctl disable --now mcpgateway
 sudo rm /etc/systemd/system/mcpgateway.service && sudo systemctl daemon-reload
+```
+
+### Exposing an already-installed service to the network
+If you installed it without `EXPOSE=1` and it only listens on `127.0.0.1`:
+```bash
+sudo sed -i 's/--host 127.0.0.1/--host 0.0.0.0/' /etc/systemd/system/mcpgateway.service
+sudo systemctl daemon-reload && sudo systemctl restart mcpgateway
+sudo firewall-cmd --add-port=4444/tcp --permanent && sudo firewall-cmd --reload
+sudo ss -tlnp | grep 4444     # should show 0.0.0.0:4444
 ```
 
 ---
 
 ## macOS
 
-### Pre-requisitos
+### Prerequisites
 ```bash
 brew install python@3.12 jq
 ```
 
-### Arranque rápido (background)
+### Quick start (background)
 ```bash
 chmod +x setup_mcpgateway.sh
 ./setup_mcpgateway.sh
 ```
 
-### Servicio permanente (launchd — arranca al iniciar sesión, KeepAlive)
+### Persistent service (launchd — starts at login, KeepAlive)
 ```bash
 INSTALL_SERVICE=1 ./setup_mcpgateway.sh
 ```
 
-### Gestión del servicio
+### Managing the service
 ```bash
 launchctl list | grep com.ibm.mcpgateway
-launchctl unload ~/Library/LaunchAgents/com.ibm.mcpgateway.plist   # parar
-# desinstalar:
+launchctl unload ~/Library/LaunchAgents/com.ibm.mcpgateway.plist   # stop
+# uninstall:
 launchctl unload -w ~/Library/LaunchAgents/com.ibm.mcpgateway.plist
 rm ~/Library/LaunchAgents/com.ibm.mcpgateway.plist
 ```
 
 ---
 
-## Variables de entorno (ambos scripts)
+## Environment variables (both scripts)
 
-| Variable | Por defecto | Descripción |
-|----------|-------------|-------------|
-| `PORT` | `4444` | Puerto del gateway |
-| `WORKDIR` | `$PWD/mcpgateway` | Directorio del venv y datos |
-| `JWT_SECRET_KEY` | *(clave de prueba)* | Secreto JWT (**>32 bytes** en producción) |
-| `BASIC_AUTH_PASSWORD` | `pass` | Password de basic auth |
-| `PLATFORM_ADMIN_EMAIL` | `admin@example.com` | Usuario admin |
-| `PLATFORM_ADMIN_PASSWORD` | `changeme` | Password admin |
-| `EXPOSE` | `0` | RHEL: `1` → bind `0.0.0.0` + abre firewalld |
-| `PY_VER` | `3.12` | RHEL: versión de Python (`3.11`/`3.12`) |
-| `INSTALL_SERVICE` | `0` | `1` → instala servicio (systemd / launchd) |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PORT` | `4444` | Gateway port |
+| `WORKDIR` | `$PWD/mcpgateway` (background) / `/opt/mcpgateway` (RHEL service) | venv and data directory |
+| `JWT_SECRET_KEY` | *(test key)* | JWT secret (**>32 bytes** in production) |
+| `BASIC_AUTH_PASSWORD` | `pass` | Basic-auth password |
+| `PLATFORM_ADMIN_EMAIL` | `admin@example.com` | Admin user |
+| `PLATFORM_ADMIN_PASSWORD` | `changeme` | Admin password |
+| `EXPOSE` | `0` | RHEL: `1` → bind `0.0.0.0` + open firewalld |
+| `PY_VER` | `3.12` | RHEL: Python version (`3.11`/`3.12`) |
+| `INSTALL_SERVICE` | `1` (RHEL) / `0` (macOS) | `1` → install service (systemd / launchd) |
 
 ---
 
-## Acceso
+## Access
 
-- **API**: `http://<host>:4444/version` (con header `Authorization: Bearer <token>`)
-- **Admin UI**: `http://127.0.0.1:4444/admin` (usuario/contraseña admin)
+- **API**: `http://<host>:4444/version` (with header `Authorization: Bearer <token>`)
+- **Admin UI**: `http://127.0.0.1:4444/admin` (admin user/password)
 
-El script genera un bearer token al final y hace un smoke-test de `/version`.
-Para regenerarlo manualmente (dentro del `.venv`):
+The script mints a bearer token at the end and runs a smoke-test against
+`/version`. To regenerate it manually (using the venv's python):
 ```bash
-python3 -m mcpgateway.utils.create_jwt_token \
+/opt/mcpgateway/.venv/bin/python -m mcpgateway.utils.create_jwt_token \
   --username admin@example.com --exp 10080 --secret "$JWT_SECRET_KEY"
 ```
 
+> The `JWT_SECRET_KEY` used to **start** the service must match the one used to
+> **mint** the token, or `/version` returns 401.
+
 ---
 
-## ⚠️ Seguridad
+## ⚠️ Security
 
-Los valores por defecto son **solo para pruebas locales** (password de 4 caracteres,
-JWT débil). Para algo serio:
-- Define `JWT_SECRET_KEY` (>32 bytes) y un `PLATFORM_ADMIN_PASSWORD` fuerte.
-- Genera los secretos de cifrado dentro del venv:
+The defaults are **for local testing only** (4-char password, weak JWT). For
+anything serious:
+- Set a strong `JWT_SECRET_KEY` (>32 bytes) and `PLATFORM_ADMIN_PASSWORD`
+  (e.g. `openssl rand -hex 32` for the JWT secret).
+- Generate the encryption secrets inside the venv:
   ```bash
   python -m mcpgateway.scripts.init_secrets
   ```
-- Edita el `.env` generado en `$WORKDIR` para el resto de ajustes.
+- Edit the generated `.env` in `$WORKDIR` for the remaining settings.
