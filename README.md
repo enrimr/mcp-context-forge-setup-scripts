@@ -149,3 +149,23 @@ anything serious:
   python -m mcpgateway.scripts.init_secrets
   ```
 - Edit the generated `.env` in `$WORKDIR` for the remaining settings.
+
+---
+
+## Disclaimer
+
+This software is provided **"as is"**, without warranty of any kind, express or
+implied. The author is **not responsible** for any damage, data loss, downtime,
+security issue, or other consequence arising from its use. You run these scripts
+**at your own risk**. See the [LICENSE](LICENSE) file for full terms.
+
+> Note: `mcp-context-forge` itself is a separate project by IBM. This repository
+> only provides convenience install scripts and is not affiliated with or
+> endorsed by IBM.
+
+---
+
+## License
+
+Released under the [MIT License](LICENSE) — free to use, modify, and
+redistribute.
