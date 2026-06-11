@@ -140,12 +140,21 @@ log "Gateway operativo."
 # ----------------------------------------------------------------------------
 # 4️⃣  Generate a bearer token & smoke-test the API
 # ----------------------------------------------------------------------------
-export MCPGATEWAY_BEARER_TOKEN=$(python3 -m mcpgateway.utils.create_jwt_token \
-    --username "$PLATFORM_ADMIN_EMAIL" --exp 10080 --secret "$JWT_SECRET_KEY")
+# create_jwt_token escribe avisos por stderr; nos quedamos solo con la última
+# línea no vacía (el JWT) por stdout.
+export MCPGATEWAY_BEARER_TOKEN="$(python3 -m mcpgateway.utils.create_jwt_token \
+    --username "$PLATFORM_ADMIN_EMAIL" --exp 10080 --secret "$JWT_SECRET_KEY" 2>/dev/null \
+    | grep -vE '^\s*$' | tail -n 1 | tr -d '[:space:]')"
 
 log "Smoke-test /version:"
-curl -s -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
-     "http://127.0.0.1:${PORT}/version" | jq .
+resp="$(curl -s -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     "http://127.0.0.1:${PORT}/version")"
+if echo "$resp" | jq . 2>/dev/null; then
+  :
+else
+  err "La respuesta no es JSON válido (¿token o auth incorrectos?). Respuesta cruda:"
+  printf '%s\n' "$resp" | head -c 500; echo
+fi
 
 # ----------------------------------------------------------------------------
 # Resumen

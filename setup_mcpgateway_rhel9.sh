@@ -19,7 +19,16 @@ EXPOSE="${EXPOSE:-0}"                     # 1 = bind 0.0.0.0 y abrir firewall
 INSTALL_SERVICE="${INSTALL_SERVICE:-1}"   # 1 = instalar unidad systemd
 SERVICE_NAME="${SERVICE_NAME:-mcpgateway}"
 HOST="$([ "$EXPOSE" = "1" ] && echo 0.0.0.0 || echo 127.0.0.1)"
-WORKDIR="${WORKDIR:-$PWD/mcpgateway}"
+
+# WORKDIR: para un servicio permanente usamos /opt (no /tmp, que se vacía en cada
+# reinicio y se llevaría el venv y la base de datos). Para background usamos $PWD.
+if [ -n "${WORKDIR:-}" ]; then
+  WORKDIR="$WORKDIR"
+elif [ "$INSTALL_SERVICE" = "1" ]; then
+  WORKDIR="/opt/mcpgateway"
+else
+  WORKDIR="$PWD/mcpgateway"
+fi
 
 # Credenciales / secretos (cámbialos para algo serio)
 JWT_SECRET_KEY="${JWT_SECRET_KEY:-my-test-key-but-now-longer-than-32-bytes}"
@@ -45,6 +54,17 @@ fi
 # Usuario destino del servicio (el que invoca, no root cuando se usa sudo -E)
 SERVICE_USER="${SUDO_USER:-$(id -un)}"
 SERVICE_GROUP="$(id -gn "$SERVICE_USER" 2>/dev/null || echo "$SERVICE_USER")"
+
+# Un servicio permanente NO debe vivir en /tmp ni /var/tmp: se vacían al reiniciar.
+if [ "$INSTALL_SERVICE" = "1" ]; then
+  case "$WORKDIR" in
+    /tmp/*|/tmp|/var/tmp/*|/var/tmp)
+      err "WORKDIR=$WORKDIR está bajo /tmp y se borra al reiniciar (perderías venv y base de datos)."
+      err "Usa una ruta persistente, p. ej.: WORKDIR=/opt/mcpgateway"
+      exit 1 ;;
+  esac
+fi
+log "WORKDIR: $WORKDIR"
 
 # ----------------------------------------------------------------------------
 # 1️⃣  Pre-requisitos del sistema (dnf)
@@ -224,13 +244,47 @@ fi
 # 5️⃣  Generar bearer token y smoke-test de la API
 # ----------------------------------------------------------------------------
 log "Generando bearer token…"
+# create_jwt_token escribe avisos de log por stderr; los descartamos y nos
+# quedamos solo con la última línea no vacía (el JWT) por stdout.
 MCPGATEWAY_BEARER_TOKEN="$(python3 -m mcpgateway.utils.create_jwt_token \
-    --username "$PLATFORM_ADMIN_EMAIL" --exp 10080 --secret "$JWT_SECRET_KEY")"
+    --username "$PLATFORM_ADMIN_EMAIL" --exp 10080 --secret "$JWT_SECRET_KEY" 2>/dev/null \
+    | grep -vE '^\s*$' | tail -n 1 | tr -d '[:space:]')"
 export MCPGATEWAY_BEARER_TOKEN
 
 log "Smoke-test /version:"
-curl -s -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
-     "http://127.0.0.1:${PORT}/version" | jq .
+resp="$(curl -s -H "Authorization: Bearer $MCPGATEWAY_BEARER_TOKEN" \
+     "http://127.0.0.1:${PORT}/version")"
+if echo "$resp" | jq . 2>/dev/null; then
+  : # respuesta JSON válida
+else
+  err "La respuesta no es JSON válido (¿token o auth incorrectos?). Respuesta cruda:"
+  printf '%s\n' "$resp" | head -c 500; echo
+fi
+
+# ----------------------------------------------------------------------------
+# Aviso de accesibilidad de red (según binding y firewall)
+# ----------------------------------------------------------------------------
+if [ "$HOST" = "0.0.0.0" ]; then
+  fw_state="firewall no comprobado"
+  if command -v firewall-cmd >/dev/null 2>&1 && $SUDO firewall-cmd --state >/dev/null 2>&1; then
+    if $SUDO firewall-cmd --query-port="${PORT}/tcp" >/dev/null 2>&1; then
+      fw_state="puerto ${PORT}/tcp ABIERTO en firewalld"
+    else
+      fw_state="⚠️  puerto ${PORT}/tcp NO abierto en firewalld → ábrelo:
+                sudo firewall-cmd --add-port=${PORT}/tcp --permanent && sudo firewall-cmd --reload"
+    fi
+  fi
+  ACCESS_NOTE="🌐 Escuchando en 0.0.0.0:${PORT} → accesible desde la red.
+   ${fw_state}"
+else
+  ACCESS_NOTE="🔒 Escuchando SOLO en 127.0.0.1:${PORT} → NO accesible desde otras máquinas.
+   (relanzaste sin EXPOSE=1). Para abrirlo a la red, dos opciones:
+     a) Reinstalar exponiendo:  INSTALL_SERVICE=1 EXPOSE=1 sudo -E $0
+     b) Editar el servicio ya instalado:
+        sudo sed -i 's/--host 127.0.0.1/--host 0.0.0.0/' ${UNIT_FILE:-/etc/systemd/system/${SERVICE_NAME}.service}
+        sudo systemctl daemon-reload && sudo systemctl restart ${SERVICE_NAME}
+        sudo firewall-cmd --add-port=${PORT}/tcp --permanent && sudo firewall-cmd --reload"
+fi
 
 # ----------------------------------------------------------------------------
 # Resumen
@@ -244,14 +298,19 @@ if [ "$RUN_MODE" = "systemd" ]; then
    Admin UI   : http://127.0.0.1:${PORT}/admin
    Usuario    : ${PLATFORM_ADMIN_EMAIL}  /  ${PLATFORM_ADMIN_PASSWORD}
 
+   ${ACCESS_NOTE}
+
    Estado :  systemctl status ${SERVICE_NAME}
    Logs   :  journalctl -u ${SERVICE_NAME} -f
    Parar  :  sudo systemctl stop ${SERVICE_NAME}
    Quitar :  sudo systemctl disable --now ${SERVICE_NAME} && sudo rm ${UNIT_FILE} && sudo systemctl daemon-reload
 
+   Regenerar token (usa el python del venv, NO el del sistema):
+     ${WORKDIR}/.venv/bin/python -m mcpgateway.utils.create_jwt_token \\
+       --username ${PLATFORM_ADMIN_EMAIL} --exp 10080 --secret '<JWT_SECRET_KEY>'
+
    ⚠️  SELinux: si el WORKDIR está bajo /home, systemd puede tener problemas
-       para ejecutar el binario. Para servicio, usa WORKDIR bajo /opt o /srv:
-         INSTALL_SERVICE=1 WORKDIR=/opt/mcpgateway sudo -E $0
+       para ejecutar el binario. /opt y /srv funcionan sin ajustes.
 ────────────────────────────────────────────────────────────
 EOF
 else
@@ -264,6 +323,8 @@ else
    Usuario    : ${PLATFORM_ADMIN_EMAIL}  /  ${PLATFORM_ADMIN_PASSWORD}
    PID        : $(cat "$WORKDIR/gateway.pid" 2>/dev/null)   (guardado en gateway.pid)
    Log        : ${WORKDIR}/gateway.log
+
+   ${ACCESS_NOTE}
 
    Parar:   kill \$(cat ${WORKDIR}/gateway.pid)
    Nota :   este modo muere al cerrar la sesión. Para algo permanente:

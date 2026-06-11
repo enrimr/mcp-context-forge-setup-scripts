@@ -32,7 +32,7 @@ EXPOSE=1 ./setup_mcpgateway_rhel9.sh        # bind 0.0.0.0 + abre firewalld
 
 ### Servicio permanente (systemd — arranca al boot, se reinicia si falla)
 ```bash
-INSTALL_SERVICE=1 WORKDIR=/opt/mcpgateway \
+INSTALL_SERVICE=1 \
   JWT_SECRET_KEY='cambia-esto-a-mas-de-32-bytes' \
   PLATFORM_ADMIN_PASSWORD='algo-fuerte' \
   EXPOSE=1 sudo -E ./setup_mcpgateway_rhel9.sh
@@ -42,8 +42,16 @@ INSTALL_SERVICE=1 WORKDIR=/opt/mcpgateway \
 - Usa **`sudo -E`** (no solo `sudo`): la `-E` conserva tus variables de entorno
   para que los secretos lleguen al `EnvironmentFile`. El servicio se monta bajo
   tu usuario (`$SUDO_USER`), no bajo root.
-- Pon **`WORKDIR` fuera de `/home`** (p. ej. `/opt/mcpgateway`): con SELinux en
-  `enforcing`, systemd suele fallar al ejecutar binarios bajo `/home`.
+- En modo servicio, `WORKDIR` es **`/opt/mcpgateway`** por defecto (persistente).
+  El script **rechaza `/tmp` y `/var/tmp`** porque se vacían al reiniciar y
+  perderías el venv y la base de datos. Evita también `/home` (problemas con
+  SELinux); `/opt` y `/srv` funcionan sin ajustes.
+- El binario del paquete vive en el venv. Para usarlo a mano (p. ej. generar un
+  token), llama al python del venv, **no** al `python3` del sistema:
+  ```bash
+  /opt/mcpgateway/.venv/bin/python -m mcpgateway.utils.create_jwt_token \
+    --username admin@example.com --exp 10080 --secret "$JWT_SECRET_KEY"
+  ```
 
 ### Gestión del servicio
 ```bash
